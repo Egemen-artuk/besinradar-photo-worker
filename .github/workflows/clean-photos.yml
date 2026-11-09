@@ -1,0 +1,70 @@
+# Removes the background of new product photos (every 30 minutes).
+# Secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL               https://ywtsbvzmvovmkjzyfzqi.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY  Supabase → Project Settings → API keys → service_role / secret key
+name: Urun fotograflarini temizle
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: clean-photos
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bekleyen foto var mi?
+        id: check
+        run: |
+          auth=()
+          case "$SUPABASE_SERVICE_ROLE_KEY" in eyJ*) auth=(-H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY");; esac
+          n=$(curl -s "$SUPABASE_URL/rest/v1/product_images?select=id&status=eq.pending&processed_at=is.null&url=not.is.null&limit=1" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" "${auth[@]}" \
+            | python3 -c "import sys, json; d = json.load(sys.stdin); print(len(d) if isinstance(d, list) else 0)")
+          echo "Bekleyen: $n"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.count != '0'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Model onbellegi
+        if: steps.check.outputs.count != '0'
+        uses: actions/cache@v4
+        with:
+          path: ~/.u2net
+          key: rembg-isnet-general-use-v1
+
+      - name: Kurulum
+        if: steps.check.outputs.count != '0'
+        run: pip install -r requirements.txt
+
+      - name: Arka planlari temizle
+        if: steps.check.outputs.count != '0'
+        run: python clean_photos.py
+
+      # GitHub stops scheduled jobs in repos without activity for 60 days: keep this one alive.
+      - name: Canli tut
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 50 * 86400 )) ]; then
+            date -u > .heartbeat
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .heartbeat && git commit -m "keepalive" && git push
+          fi
